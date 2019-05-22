@@ -73,7 +73,7 @@ def index_documents client, type, index, allowed_groups = nil
 
     log.info "Number of batches: #{batches}"
 
-    (0..batches).each do |i|
+    batches.times do |i|
       batch_start_time = Time.now
       log.info "Indexing batch #{i} of #{count/settings.batch_size}"
       offset = i*settings.batch_size
