@@ -236,7 +236,8 @@ def delete_document_all_types client, s, types
   types.each do |type|
     uuid = get_uuid s
     if uuid
-      Settings.instance.indexes[type].each do |key, index|
+      indexes = Indexes.instance.get_indexes type
+      indexes.each do |key, index|
         begin
           client.delete_document index[:index], uuid
         rescue
