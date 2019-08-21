@@ -28,8 +28,10 @@ class Elastic
 
     case res
     when Net::HTTPSuccess, Net::HTTPRedirection
+      log.debug "Succeeded to run request #{uri}\n Request body: #{req.body}\n Response body: #{res.body}"
       res.body
     else
+      log.error "Failed to run request #{uri}\n Request body: #{req.body}\n Response body: #{res.body}"
       res.value
     end
   end
@@ -72,27 +74,15 @@ class Elastic
   # Creates an index in the elasticSearch instance..
   #
   #   - index: Index to be created
-  #   - mappings: currently not used
-  #
-  # TODO: the settings for creating the index have been hardwired for
-  # now.  We should move them to the configuration.
-  #
-  # TODO: describe and add support for the mappings argument
-  def create_index index, mappings = nil
+  #   - mappings: Optional pre-defined document mappings for the index,
+  #     JSON object passed directly to Elasticsearch.
+  #   - settings: Optional JSON object passed directly to Elasticsearch
+  def create_index index, mappings = nil, settings = nil
     uri = URI("http://#{@host}:#{@port_s}/#{index}")
     req = Net::HTTP::Put.new(uri)
-
     req.body = {
-      settings: {
-        analysis: {
-          analyzer: {
-            dutchanalyzer: {
-              tokenizer: "standard",
-              filter: ["lowercase", "dutchstemmer"] } },
-          filter: {
-            dutchstemmer: {
-              type: "stemmer",
-              name: "dutch" } } } }
+      mappings: mappings,
+      settings: settings
     }.to_json
 
     result = run(uri, req)
@@ -197,7 +187,7 @@ class Elastic
         id = data[0] && data[0][:index] && data[0][:index][:_id]
         log.warn( e )
         log.warn( "Failed to upload document #{id} with length #{body.length}" )
-        log.warn( "Falied document #{id} is not ginormous" ) if body.length < 100_000_000
+        log.warn( "Failed document #{id} is not ginormous" ) if body.length < 100_000_000
       end
     end
   end
@@ -249,7 +239,7 @@ class Elastic
       log.debug "Searching elastic search index #{index} for body #{query}"
       uri = URI("http://#{@host}:#{@port_s}/#{index}/_search")
       req = Net::HTTP::Post.new(uri)
-      req.body = query.to_json
+      req.body = query.is_a?(String) ? query : query.to_json
     end
 
     run(uri, req)

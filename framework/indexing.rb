@@ -95,15 +95,15 @@ SPARQL
         end
 
       log.debug "Discovered identifiers for this batch: #{query_result}"
+
       number_of_threads = settings.batch_size > ENV['NUMBER_OF_THREADS'] ? ENV['NUMBER_OF_THREADS']: settings.batch_size
       Parallel.each( query_result, in_threads: number_of_threads ) do |result|
         uuid = result[:id].to_s
         log.debug "Fetching document for uuid #{uuid}"
         begin
           document, attachment_pipeline = fetch_document_to_index uuid: uuid, properties: properties, allowed_groups: allowed_groups
-
+          document["uuid"] = uuid
           log.debug "Uploading document #{uuid} - batch #{i} - allowed groups #{allowed_groups}"
-
           if attachment_pipeline
             data.push({ index: { _id: uuid , pipeline: "attachment" } }, document)
           else

@@ -11,6 +11,7 @@ A component to integrate authorization-aware search via Elasticsearch into the m
   - [Property Paths](#property-paths)
   - [Nested Objects](#nested-objects)
   - [Multi-types](#multi-types)
+  - [Elasticsearch Settings](#elasticsearch-settings)
   - [Elasticsearch Mappings](#elasticsearch-mappings)
 - [Index Lifecycle](#index-lifecycle)
   - [Persistent Indexes](#persistent-indexes)
@@ -180,6 +181,45 @@ A multi-type is defined by a list of its constituent simple types, and a set of 
                 }
             ]
         }
+```
+
+### Elasticsearch Settings
+
+Elasticsearch index settings can optionally be specified for the whole domain, and overridden on a per-type basis. To specify settings for all indexes, use `default_settings`:
+
+```
+  "types" : [...],
+  "default_settings" : {
+        "analysis": {
+          "analyzer": {
+            "dutchanalyzer": {
+              "tokenizer": "standard",
+              "filter": ["lowercase", "dutchstemmer"] } },
+          "filter": {
+            "dutchstemmer": {
+              "type": "stemmer",
+              "name": "dutch" } } } }
+```
+
+To specify them for a single type, use `settings`:
+
+```
+  "types": [
+    {
+      "type": "agendaitems"
+      ...
+      "settings" : {
+        "analysis": {
+          "analyzer": {
+            "dutchanalyzer": {
+              "tokenizer": "standard",
+              "filter": ["lowercase", "dutchstemmer"] } },
+          "filter": {
+            "dutchstemmer": {
+              "type": "stemmer",
+              "name": "dutch" } } } }
+    }
+    ...
 ```
 
 ### Elasticsearch Mappings
@@ -455,10 +495,21 @@ Pagination is specified with `page[number]` and `page[size]`:
 
     /documents/search?filter[name]=fish&page[number]=2&page[size]=20
 
+#### Removing Duplicate Results
+
+When querying multiple indexes with additive indexes, identical documents may be returned multiple times. Unique results can be assured using Elasticsearch's Field Collapsing, toggled using the `collapse_uuids` parameter:
+
+    /documents/search?filter[name]=fish&collapse_uuids=t
+
+Note that in the results, `count` still designates total non-unique results.
+
 ### POST `/:type/index`
 
 Re-index all documents of type `type`. If the request is sent with authorization headers, only the authorized indexes are re-indexed. Otherwise, all pertaining indexes are triggered.
 
+### DELETE `/:type/delete`
+
+Delete index(es) of type `type`. If the request is sent with authorization headers, only the authorized indexes are deleted. Otherwise, all pertaining indexes are deleted.
 
 
 
@@ -478,5 +529,5 @@ Environment parameters can be set in the `config.json` file (lowercase) or Docke
 
 **eager_indexing_sparql_query** (`config.json` only) -- To be defined. 
 
-
+**enable_raw_dsl_endpoint** -- enables the raw Elasticsearch DSL endpoint. This endpoint is disabled by default for security concerns.
 

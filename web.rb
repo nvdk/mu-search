@@ -50,6 +50,12 @@ def configure_settings client, is_reload = nil
 
   set :additive_indexes, ENV['ADDITIVE_INDEXES'] || configuration["additive_indexes"]
 
+  raw = ENV['ENABLE_RAW_DSL_ENDPOINT'] || configuration["enable_raw_dsl_endpoint"]
+
+  set :raw_dsl_endpoint, ['true','True','TRUE'].include?(raw)
+
+  set :default_index_settings, configuration["default_settings"]
+
   set :common_terms_cutoff_frequency, (ENV['COMMON_TERMS_CUTOFF_FREQUENCY'] || configuration["common_terms_cutoff_frequency"] || 0.001)
 
   set :automatic_index_updates,
@@ -75,7 +81,7 @@ def configure_settings client, is_reload = nil
     end
   end
   if !sparql_up
-    log.info "Waiting for Virtuoso"
+    log.info "Waiting for SPARQL endpoint"
     while !sparql_up do
       log.info "."
       sleep 1
@@ -107,16 +113,16 @@ def configure_settings client, is_reload = nil
     settings.master_mutex.synchronize do
       eager_indexing_groups.each do |groups|
         settings.type_definitions.keys.each do |type|
-          index = get_matching_index type, groups, groups
+          index = get_matching_index_name type, groups, []
+          index_name = (index and index[:index]) || create_index(client, type, groups, [])
 
-          unless settings.persist_indexes and index and client.index_exists index
-            log.info "Clearing index for type #{type}."
-            index = index || create_index(client, type, groups, groups)
-            clear_index client, index
-            index_documents client, type, index, groups
-            Indexes.instance.set_status index, :valid
+          unless settings.persist_indexes and index and client.index_exists index_name
+            log.info "Clearing index for type #{type} - #{index_name}."
+            clear_index client, index_name
+            index_documents client, type, index_name, groups
+            Indexes.instance.set_status index_name, :valid
           else
-            log.info "Using persisted index: #{index}"
+            log.info "Using persisted index: #{index_name}"
           end
         end
       end
@@ -164,7 +170,8 @@ post "/:path/invalidate" do |path|
   content_type 'application/json'
   client = Elastic.new(host: 'elasticsearch', port: 9200)
   type = get_type_from_path path
-  allowed_groups, used_groups = get_request_groups
+  allowed_groups = get_allowed_groups
+  used_groups = []
 
   if path == '_all'
     settings.master_mutex.synchronize do
@@ -184,9 +191,9 @@ post "/:path/invalidate" do |path|
           Indexes.instance.invalidate_all_by_type type
         { indexes: indexes_invalidated, status: "invalid" }.to_json
       else
-        indexes = get_request_indexes type
+        index_names = get_request_index_names type
 
-        indexes.each do |index|
+        index_names.each do |index|
           Indexes.instance.mutex(index).synchronize do
             Indexes.instance.set_status index, :invalid
           end
@@ -200,11 +207,12 @@ end
 
 # Deletes the indexes for :path requiring them to be fully recreated
 # the next time we make a search.
-delete "/:path" do |path|
+delete "/:path/delete" do |path|
   content_type 'application/json'
   client = Elastic.new(host: 'elasticsearch', port: 9200)
   type = get_type_from_path path
-  allowed_groups, used_groups = get_request_groups
+  allowed_groups = get_allowed_groups
+  used_groups = []
 
   if path == '_all'
     settings.master_mutex.synchronize do
@@ -222,23 +230,21 @@ delete "/:path" do |path|
         type = get_type_from_path path
 
         indexes_deleted = Indexes.instance.get_indexes(type).map do |groups, index|
-          destroy_index client, index[:index]
-          Indexes.instance.indexes[type].delete(groups)
+          destroy_index client, index[:index], groups
           index[:index]
         end
 
         { indexes: indexes_deleted, status: "deleted" }.to_json
       else
-        indexes = get_request_indexes type
+        index_names = get_request_index_names type
 
-        indexes.each do |index|
+        index_names.each do |index|
           Indexes.instance.mutex(index).synchronize do
-            destroy_index client, index
-            Indexes.instance.indexes[type].delete(allowed_groups)
+            destroy_index client, index, type, allowed_groups
           end
         end
 
-        { indexes: indexes, status: "deleted" }.to_json
+        { indexes: index_names, status: "deleted" }.to_json
       end
     end
   end
@@ -249,28 +255,30 @@ end
 post "/:path/index" do |path|
   content_type 'application/json'
   client = Elastic.new host: 'elasticsearch', port: 9200
-  allowed_groups, used_groups = get_request_groups
+  allowed_groups = get_allowed_groups
+  used_groups = []
+
   # This method shouldn't be necessary...
   # something wrong with how I'm using synchronize
   # and return values.
   def sync client, type
     settings.master_mutex.synchronize do
-      indexes = get_request_indexes type
+      index_names = get_request_index_names type
 
-      unless indexes
+      unless !index_names.empty?
         indexes = create_request_indexes client, type
+        index_names = indexes.map { |index| index[:index] }
       end
 
-      indexes.each do |index|
+      index_names.each do |index|
         Indexes.instance.set_status index, :updating
       end
 
-      return indexes.map { |index| index[:index] }
+      return index_names
     end
   end
 
-  # yes, rename this please
-  def go client, index, type, allowed_groups = nil
+  def index_index client, index, type, allowed_groups = nil
     Indexes.instance.mutex(index).synchronize do
       clear_index client, index
       report = index_documents client, type, index, allowed_groups
@@ -283,20 +291,23 @@ post "/:path/index" do |path|
     if !allowed_groups.empty?
       if path == '_all'
         Indexes.instance.types.map do |type|
-          index = sync client, type
-          go client, index, type
+          index_names = sync client, type
+          index_names.each do |index|
+            index_index client, index, type
+          end
         end
       else
         type = get_type_from_path path
-        index = sync client, type
-        go client, index, type
+        index_names = sync client, type
+        index_names.each do |index|
+          index_index client, index, type
+        end
       end
     else
       if path == '_all'
-        report =
-          Indexes.instance.indexes.map do |type, indexes|
+        report = Indexes.instance.indexes.map do |type, indexes|
           indexes.map do |groups, index|
-            go client, index[:index], type, groups
+            index_index client, index[:index], type, groups
           end
         end
         report.reduce([], :concat)
@@ -304,7 +315,7 @@ post "/:path/index" do |path|
         type = get_type_from_path path
         if Indexes.instance.get_indexes(type)
           Indexes.instance.get_indexes(type).map do |groups, index|
-            go client, index[:index], type, groups
+            index_index client, index[:index], type, groups
           end
         end
       end
@@ -333,16 +344,16 @@ get "/:path/search" do |path|
 
   log.debug "SEARCH Found type #{type}"
 
-  indexes = get_indexes_safe client, type
+  index_names = get_or_create_indexes client, type
 
-  log.debug "SEARCH Found indexes #{indexes}"
+  log.debug "SEARCH Found indexes #{index_names}"
 
   # TOOD: Not sure how this could ever be empty.  We should at least
   # be able to build some indexes if we have received some groups.
   # This is a method of last resort which currently does the job.
-  return [].to_json if indexes.length == 0
+  return [].to_json if index_names.length == 0
 
-  index_string = indexes.join(',')
+  index_string = index_names.join(',')
 
   log.debug "SEARCH Searching index(es): #{index_string}"
 
@@ -370,6 +381,10 @@ get "/:path/search" do |path|
   es_query["from"] = page * size
   es_query["size"] = size
 
+  if params["collapse_uuids"] == "t"
+    es_query["collapse"] = { field: "uuid" }
+  end
+
   # hard-coded example
   # question: how to specify which fields are included/excluded?
   # or should we simply exclued all attachment fields?
@@ -379,7 +394,7 @@ get "/:path/search" do |path|
 
   # while Indexes.instance.status index == :updating
 
-  while indexes.map { |index| Indexes.instance.status index == :updating }.any?
+  while index_names.map { |index| Indexes.instance.status index == :updating }.any?
     sleep 0.5
   end
 
@@ -399,24 +414,28 @@ end
 
 # Raw ES Query DSL
 # Need to think through several things, such as pagination
-post "/:path/search" do |path|
-  content_type 'application/json'
-  client = Elastic.new(host: 'elasticsearch', port: 9200)
-  type = get_type_from_path path
+if settings.raw_dsl_endpoint
+  post "/:path/search" do |path|
+    content_type 'application/json'
+    client = Elastic.new(host: 'elasticsearch', port: 9200)
+    type = get_type_from_path path
+    index_names = get_or_create_indexes client, type
 
-  index = get_index_safe client, type
+    return [].to_json if index_names.length == 0
 
-  es_query = @json_body
+    index_string = index_names.join(',')
 
-  count_query = es_query.clone
-  count_query.delete("from")
-  count_query.delete("size")
-  count_result = JSON.parse(client.count index: index, query: es_query)
-  count = count_result["count"]
+    es_query = @json_body
 
-  format_results(type, count, 0, 10, client.search(index: index, query: es_query)).to_json
+    count_query = es_query.clone
+    count_query.delete("from")
+    count_query.delete("size")
+    count_result = JSON.parse(client.count index: index_string, query: es_query)
+    count = count_result["count"]
+
+    format_results(type, count, 0, 10, client.search(index: index_string, query: es_query)).to_json
+  end
 end
-
 
 # Processes an update from the delta system.  Consumes the genesis
 # delta format and invalidates the necessary indexes.
