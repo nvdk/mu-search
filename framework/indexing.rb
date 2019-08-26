@@ -105,7 +105,7 @@ SPARQL
           document["uuid"] = uuid
           log.debug "Uploading document #{uuid} - batch #{i} - allowed groups #{allowed_groups}"
           if attachment_pipeline
-            data.push({ index: { _id: uuid , pipeline: "attachment" } }, document)
+            data.push({ index: { _id: uuid , pipeline: attachment_pipeline } }, document)
           else
             data.push({ index: { _id: uuid } }, document)
           end
@@ -113,6 +113,7 @@ SPARQL
           log.warn "Failed to fetch document or upload it or somesuch.  ID #{uuid} error #{e.inspect}"
         end
       end
+
       begin
         log.info "Bulk updating documents for batch #{i} - index #{index} - data #{data.length}"
         client.bulk_update_document index, data unless data.empty?
