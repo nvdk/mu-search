@@ -22,11 +22,13 @@ class Elastic
   def run(uri, req, retries = 6)
     req['content-type'] = 'application/json'
 
-    def run_rescue(uri, req, retries)
+    def run_rescue(uri, req, retries, result = nil)
       if retries == 0
-        log.error "Failed to run request #{uri}\n Response body: #{res.body}"
-        log.debug "Request body for #{uri} was: #{req.body}\n Response body: #{res.body}"
-        res.value
+        log.error "Failed to run request #{uri}\n result: #{result.inspect}"
+        log.debug "Request body for #{uri} was: #{req.body}"
+        if result.kind_of?(Exception)
+          raise result
+        end
       else
         log.debug "Failed to run request #{uri} retrying (#{retries} left)"
         next_retries = retries - 1
@@ -39,8 +41,8 @@ class Elastic
     res = Net::HTTP.start(uri.hostname, uri.port) do |http|
       begin
         http.request(req)
-      rescue
-        run_rescue(uri, req, retries)
+      rescue Exception => e
+        run_rescue(uri, req, retries, e)
       end
     end
 
@@ -49,11 +51,12 @@ class Elastic
       log.debug "Succeeded to run request #{uri}\n Request body: #{req.body}\n Response body: #{res.body}"
       res.body
     when Net::HTTPTooManyRequests
-      run_rescue(uri, req, retries)
+      run_rescue(uri, req, retries, res)
     else
-      log.error "Failed to run request #{uri}\n Response body: #{res.body}"
-      log.debug "Request body for #{uri} was: #{req.body}\n Response body: #{res.body}"
-      res.value
+      result = res.kind_of?(String) ? res : res.body
+      log.error "Failed to run request #{uri}\n Response: #{result}"
+      log.debug "Request body for #{uri} was: #{req.body}\n Response body: #{result}"
+      res.kind_of?(String) ? nil : res.value
     end
   end
 
